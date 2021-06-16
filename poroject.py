@@ -45,7 +45,6 @@ import re
 test_df = spark.read.text("/content/drive/MyDrive/Bigdata_project/WestburyLab.Wikipedia.Corpus.txt", lineSep="---END.OF.DOCUMENT---\n")\
        .withColumn("pp_id", monotonically_increasing_id()).cache()
 
-
 test_df.show()
 
 #converting data into Spark NLP annotation format
@@ -177,17 +176,32 @@ df = pca_results.select('pp_id', col('tf_idf_pca'))
 
 df.write.parquet("/content/drive/MyDrive/Bigdata_project/pca_results1.parquet")
 
+df = spark.read.parquet("/content/drive/MyDrive/Bigdata_project/pca_results1.parquet")
+
 df.show(5)
+
+df.count()
 
 from pyspark.ml.clustering import KMeans
 
 kmeans = KMeans(featuresCol='tf_idf_pca', predictionCol='cluster_num', k=20)
 kmeans_model = kmeans.fit(df)
 
-cluster_coordinates = kmeans_model.clusterCenters()
+from pyspark.ml.linalg import DenseVector, Vector
 
-clusters_cols = ["clusters_centers"]
-clusters_df = spark.createDataFrame(data=cluster_coordinates, schema = clusters_cols)
+cluster_coordinates =  kmeans_model.clusterCenters()
+
+cluster_coordinates
+
+type(cluster_coordinates[0])
+
+from pyspark.ml.linalg import Vectors
+
+dff = [(i, Vectors.dense(x)) for i, x in enumerate(cluster_coordinates)]
+
+df_centers = spark.createDataFrame(dff, schema=["cluster_id", "cluster_center"])
+
+df_centers.show()
 
 import numpy as np
 
@@ -196,12 +210,25 @@ def cos_sim_udf(a,b):
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
 
 #calculationg top separated articles (не досчитался за 2 дня)
-new_df = df.crossJoin(clusters_df.select(col("clusters_centers").alias('vectors_2')))\
-    .withColumn("product", cos_sim_udf(col('tf_idf_pca'), col('vectors_2')))\
-    .where("product<1").groupBy(col("pp_id")).agg(max("product").name('max_product'))\
+new_df = pca_results.crossJoin(df_centers.select('cluster_center'))\
+    .withColumn("product", cos_sim_udf(col('tf_idf_pca'), col('cluster_center')))\
+    .groupBy(col("pp_id")).agg(max("product").name('max_product'))\
     .orderBy('max_product')
 
 new_df.show()
+
+results = new_df.limit(20).join(pca_results, ['pp_id'], 'left')
+
+import pandas as pd
+
+pd_results = results.select('value').toPandas()
+
+pd_results.to_csv('/content/drive/MyDrive/Bigdata_project/separated_articles.csv')
+
+#top 5 the most isolated articles
+for i in range(5):
+  print(pd_results.value[i])
+  print("-"*200)
 
 
 
